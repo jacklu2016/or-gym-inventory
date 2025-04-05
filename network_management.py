@@ -18,7 +18,7 @@ def assign_env_config(self, config: Dict[str, Any]):
     for key, value in config.items():
         # Special handling for graph if provided in config
         if key == 'graph' and isinstance(value, nx.DiGraph):
-             print("Assigning graph from config") # Debug print
+             # print("Assigning graph from config") # Debug print
              self.graph = value.copy() # Use a copy
         else:
             setattr(self, key, value)
@@ -35,7 +35,7 @@ class NetInvMgmtMasterEnv(gym.Env):
 
     Observation Space:
         Box space representing the system state, typically including:
-        - Market demands in the current period for each (retailer, market) link.
+        - Market demands/backlog at the start of the period for each (retailer, market) link.
         - On-hand inventory at each main node (distribution/factory).
         - Pipeline inventory, represented by orders placed in previous periods for each link with a lead time.
         Flattened into a 1D array.
@@ -79,13 +79,16 @@ class NetInvMgmtMasterEnv(gym.Env):
             self._create_default_graph() # Define default structure if none provided
 
         # --- Apply custom configuration AFTER graph is set ---
-        if env_config:
-            assign_env_config(self, env_config) # Apply overrides from dict
+        # Need to handle env_config slightly differently now backlog is set above
+        _env_config = env_config if env_config else {}
+        _env_config['backlog'] = self.backlog # Ensure backlog from init arg overrides config if necessary
+        assign_env_config(self, _env_config) # Apply overrides from dict
 
         # --- Post-Graph Setup and Validation ---
         self._initialize_graph_dependent_attributes()
         self._validate_inputs()
-        self._setup_demand_distributions() # Needs np_random, setup in reset first time
+        # Demand distributions need np_random, setup in reset first time
+        # Call _setup_demand_distributions within reset after super().reset()
 
         # --- Define Spaces ---
         self._define_spaces()
@@ -100,7 +103,7 @@ class NetInvMgmtMasterEnv(gym.Env):
         self.D: pd.DataFrame = None # Demand history
         self.U: pd.DataFrame = None # Unfulfilled demand/orders
         self.P: pd.DataFrame = None # Profit history
-        self.action_log: np.ndarray = None # Log actions (needed for some state representations if changed)
+        # self.action_log: np.ndarray = None # Log actions (can be useful but not currently needed for state)
 
     def _create_default_graph(self):
         """ Creates the default graph structure if none is provided. """
@@ -116,15 +119,20 @@ class NetInvMgmtMasterEnv(gym.Env):
         self.graph.add_nodes_from([7, 8]) # Raw materials
         # Define edges with attributes
         self.graph.add_edges_from([
-            (1, 0, {'p': 2.000, 'b': 0.100, 'demand_dist_func': lambda **p: self.np_random.poisson(**p), 'dist_param': {'lam': 20}}), # Use lam for poisson in numpy
-            (2, 1, {'L': 5, 'p': 1.500, 'g': 0.010}),
+             # Edge (1,0) connects Retailer 1 to Market 0
+            (1, 0, {'p': 2.000, 'b': 0.100, # p: price charged by retailer, b: backlog/lost sale cost
+                    # Function to sample demand using environment's RNG
+                    'demand_dist_func': lambda **p: self.np_random.poisson(**p),
+                    # Parameters for the demand function (numpy poisson uses 'lam')
+                    'dist_param': {'lam': 20}}),
+            (2, 1, {'L': 5, 'p': 1.500, 'g': 0.010}), # L: Lead Time, p: purchase cost for receiver, g: pipeline holding cost
             (3, 1, {'L': 3, 'p': 1.600, 'g': 0.015}),
             (4, 2, {'L': 8, 'p': 1.000, 'g': 0.008}),
             (4, 3, {'L': 10, 'p': 0.800, 'g': 0.006}),
             (5, 2, {'L': 9, 'p': 0.700, 'g': 0.005}),
             (6, 2, {'L': 11, 'p': 0.750, 'g': 0.007}),
             (6, 3, {'L': 12, 'p': 0.800, 'g': 0.004}),
-            (7, 4, {'L': 0, 'p': 0.150, 'g': 0.000}),
+            (7, 4, {'L': 0, 'p': 0.150, 'g': 0.000}), # L=0 means immediate transfer
             (7, 5, {'L': 1, 'p': 0.050, 'g': 0.005}),
             (8, 5, {'L': 2, 'p': 0.070, 'g': 0.002}),
             (8, 6, {'L': 0, 'p': 0.200, 'g': 0.000})
@@ -220,8 +228,9 @@ class NetInvMgmtMasterEnv(gym.Env):
                 assert 'demand_dist_func' in attrs or 'user_D' in attrs, f"Edge {edge}: Missing demand source ('demand_dist_func' or 'user_D')"
                 if 'demand_dist_func' in attrs:
                     assert 'dist_param' in attrs, f"Edge {edge}: Missing 'dist_param' for 'demand_dist_func'"
-                if 'user_D' in attrs:
-                     assert len(attrs['user_D']) == self.num_periods, f"Edge {edge}: user_D length != num_periods"
+                # Check user_D length only if it's expected to be used (not sample_path=True)
+                if 'user_D' in attrs and np.sum(attrs['user_D']) > 0 and not attrs.get('sample_path', False):
+                     assert len(attrs['user_D']) == self.num_periods, f"Edge {edge}: user_D length {len(attrs['user_D'])} != num_periods {self.num_periods}"
 
         # Other parameters
         assert isinstance(self.backlog, bool), "backlog must be boolean"
@@ -237,16 +246,20 @@ class NetInvMgmtMasterEnv(gym.Env):
         for u, v, data in self.graph.edges(data=True):
             edge = (u, v)
             if edge in self.retail_links:
-                # If user_D is specified AND sample_path is False, use user_D directly
-                if 'user_D' in data and np.sum(data['user_D']) > 0 and not data.get('sample_path', False):
-                     # Demand taken directly from user_D list in step function
-                     data['_sample_demand'] = lambda e=edge: self.graph.edges[e]['user_D'][self.period]
+                 # If user_D is specified AND sample_path is False, use user_D directly
+                use_user_d = ('user_D' in data and np.sum(data['user_D']) > 0 and not data.get('sample_path', False))
+
+                if use_user_d:
+                    # Demand taken directly from user_D list in step function
+                    # Ensure index doesn't go out of bounds
+                    data['_sample_demand'] = lambda e=edge: self.graph.edges[e]['user_D'][min(self.period, len(self.graph.edges[e]['user_D'])-1)]
                 # Otherwise, set up sampling function based on demand_dist_func
                 elif 'demand_dist_func' in data and 'dist_param' in data:
                     params = data['dist_param']
                     dist_func = data['demand_dist_func']
                     # Create lambda that calls the stored function with params using self.np_random
                     # This lambda captures the specific `dist_func` and `params` for this edge
+                    # Ensures demand is non-negative integer
                     data['_sample_demand'] = lambda f=dist_func, p=params: max(0, int(round(f(**p))))
                 else:
                     # Default to zero demand if no valid source specified
@@ -275,8 +288,8 @@ class NetInvMgmtMasterEnv(gym.Env):
         obs_low = np.full(self.obs_dim, obs_low_heuristic, dtype=np.float32)
         obs_high = np.full(self.obs_dim, obs_high_heuristic, dtype=np.float32)
 
-        # Refine bounds for demand part if possible (usually non-negative)
-        obs_low[0:len(self.retail_links)] = 0.0
+        # Refine bounds for demand/backlog part (first len(retail_links) elements)
+        obs_low[0:len(self.retail_links)] = 0.0 # Demand/backlog usually non-negative
 
         self.observation_space = spaces.Box(
             low=obs_low,
@@ -320,23 +333,20 @@ class NetInvMgmtMasterEnv(gym.Env):
 
     def _get_obs(self) -> np.ndarray:
         """
-        Constructs the observation array based on current demand, inventory, and pipeline state.
-        State format: [Current Demands, Current On-Hand Inventories, Flattened Pipeline History]
+        Constructs the observation array based on current backlog, inventory, and pipeline state.
+        State format: [Current Backlog (U[t]), Current On-Hand Inventories (X[t]), Flattened Pipeline History (R[t-L:t-1])]
         """
         t = self.period
 
-        # 1. Current period's demand (or previous period's unfulfilled if t=0?)
-        # Let's use D[t] as demand realized *in* period t (calculated in step).
-        # For observation at start of t, demand is not yet known.
-        # Let's use U[t] (unfulfilled from end of t-1 / start of t) for the demand component.
-        demand_component = self.U.loc[t, self.retail_links].values.flatten().astype(np.float32)
+        # 1. Current period's starting backlog/unfulfilled demand (U[t])
+        # U[t] represents the unfulfilled demand from the *end* of period t-1.
+        demand_backlog_component = self.U.loc[t, self.retail_links].values.flatten()
 
-
-        # 2. Current on-hand inventory at main nodes
-        inventory_component = self.X.loc[t, self.main_nodes].values.flatten().astype(np.float32)
+        # 2. Current on-hand inventory at main nodes (X[t])
+        inventory_component = self.X.loc[t, self.main_nodes].values.flatten()
 
         # 3. Pipeline inventory state
-        # Represented by orders placed in previous periods, padded to match total pipeline length
+        # Represented by orders *placed* in previous periods, padded to match total pipeline length
         pipeline_components = []
         for edge in self.reorder_links:
             lead_time = self.lead_times[edge]
@@ -346,13 +356,22 @@ class NetInvMgmtMasterEnv(gym.Env):
             # Get past orders for this link up to L periods ago
             # R rows are indexed by period t, R[t] is order placed *in* period t
             # We need orders placed from t-L to t-1 (which arrive from period t to t+L-1)
-            start_period = max(0, t - lead_time)
-            end_period = t # Exclusive
+            start_period_idx = max(0, t - lead_time)
+            end_period_idx = t # pandas slicing is inclusive start, exclusive end for loc index when using integers
+
+            # Ensure indices are within the bounds of the R dataframe (0 to T-1)
+            start_period_idx = min(start_period_idx, self.num_periods - 1)
+            end_period_idx = min(end_period_idx, self.num_periods)
 
             # Get the relevant slice of orders from the R dataframe for this edge
-            past_orders = self.R.loc[start_period : end_period - 1, edge].values # Orders placed in [start_period, end_period-1]
+            # Handle case where t < L
+            if start_period_idx >= end_period_idx:
+                 past_orders = np.array([], dtype=np.float64)
+            else:
+                 # Select rows based on index range and the specific edge column
+                 past_orders = self.R.loc[start_period_idx : end_period_idx - 1, edge].values
 
-            # Pad with zeros if t < lead_time
+            # Pad with zeros if t < lead_time or slice is empty
             padded_pipeline = np.zeros(lead_time, dtype=np.float32)
             if len(past_orders) > 0:
                  # Fill from the end (most recent order is last in relevant history for state)
@@ -361,12 +380,24 @@ class NetInvMgmtMasterEnv(gym.Env):
             pipeline_components.append(padded_pipeline)
 
         if pipeline_components:
-            pipeline_state = np.concatenate(pipeline_components).astype(np.float32)
+            pipeline_state = np.concatenate(pipeline_components)
         else:
-            pipeline_state = np.array([], dtype=np.float32) # Empty if no links with L>0
+            # Handle case with no reorder links or all L=0
+            pipeline_state = np.array([])
+            # Check if pipeline_obs_length was 0 in this case
+            if self.pipeline_obs_length != 0:
+                 print(f"Warning: pipeline_components is empty but pipeline_obs_length={self.pipeline_obs_length}")
+                 # Create empty array of correct expected length if needed
+                 pipeline_state = np.zeros(self.pipeline_obs_length)
+
 
         # Concatenate all parts
-        obs = np.concatenate([demand_component, inventory_component, pipeline_state])
+        # Ensure components are float32 before concatenating
+        obs = np.concatenate([
+            demand_backlog_component.astype(np.float32),
+            inventory_component.astype(np.float32),
+            pipeline_state.astype(np.float32)
+        ])
 
         # Ensure final shape and dtype match the observation space
         if obs.shape[0] != self.obs_dim:
@@ -379,25 +410,25 @@ class NetInvMgmtMasterEnv(gym.Env):
              else:
                  obs = obs[:self.obs_dim]
 
-
         return obs.astype(self.observation_space.dtype) # Final cast
 
     def _get_info(self) -> Dict[str, Any]:
         """ Returns auxiliary information about the current state. """
+        # Use .iloc for safety if index might become non-sequential later
         info = {
             "period": self.period,
-            "inventory": self.X.loc[self.period].to_dict(),
-            "pipeline": self.Y.loc[self.period].to_dict(),
-            "backlog_start": self.U.loc[self.period].to_dict()
+            "inventory": self.X.iloc[self.period].to_dict(),
+            "pipeline": self.Y.iloc[self.period].to_dict(),
+            "backlog_start": self.U.iloc[self.period].to_dict()
         }
         # Add previous step results if available
         if self.period > 0:
             t_prev = self.period - 1
             info.update({
-                "demand_prev": self.D.loc[t_prev].to_dict(),
-                "sales_prev": self.S.loc[t_prev].to_dict(),
-                "profit_node_prev": self.P.loc[t_prev].to_dict(),
-                "profit_total_prev": self.P.loc[t_prev].sum()
+                "demand_prev": self.D.iloc[t_prev].to_dict(),
+                "sales_prev": self.S.iloc[t_prev].to_dict(),
+                "profit_node_prev": self.P.iloc[t_prev].to_dict(),
+                "profit_total_prev": self.P.iloc[t_prev].sum()
             })
         return info
 
@@ -411,148 +442,178 @@ class NetInvMgmtMasterEnv(gym.Env):
         action_dict = {link: action[i] for i, link in enumerate(self.reorder_links)}
 
         # Process orders based on supplier type and constraints
+        # Keep track of inventory used for production/sales from each node
+        inventory_consumed = pd.Series(0.0, index=self.main_nodes)
+
         for edge, request_raw in action_dict.items():
             request = max(0, round(request_raw)) # Ensure non-negative integer request
             supplier, purchaser = edge
 
             order_fulfilled = 0
             if supplier in self.rawmat:
-                # Unlimited raw materials
+                # Unlimited raw materials - order is always fulfilled
                 order_fulfilled = request
             elif supplier in self.distrib or supplier in self.factory:
                 # Limited by supplier's on-hand inventory at START of period t
-                inv_supplier = self.X.loc[t, supplier]
-                order_available = inv_supplier
+                # We need to account for inventory potentially consumed by other orders from the same supplier in this loop
+                inv_supplier_available = self.X.loc[t, supplier] - inventory_consumed[supplier]
+                order_available_inv = max(0, inv_supplier_available) # Can't use negative inventory
+
+                order_available = order_available_inv # Start with inventory constraint
 
                 if supplier in self.factory:
                     # Also limited by capacity and yield
                     cap_supplier = self.graph.nodes[supplier]['C']
                     yield_supplier = self.graph.nodes[supplier]['v']
-                    # Production required = request / yield (but inventory consumed is request / yield)
-                    # Let's assume request is for *output* units. Production needs request/yield input units.
-                    # Max production based on inventory: yield * inv_supplier
-                    # Max production based on capacity: cap_supplier
-                    max_producible = min(cap_supplier, yield_supplier * inv_supplier)
-                    order_available = max_producible
+                    # Calculate max producible based on *remaining* inventory (after fulfilling previous orders)
+                    max_producible_inv = yield_supplier * order_available_inv
+                    # Production also limited by overall capacity (assume capacity is per period, not per order)
+                    # This part is tricky - should capacity be shared? Assume yes for now.
+                    # Let's check total production so far for this node if needed, or simplify:
+                    # Assume capacity constraint applies to *each* order request individually? Or total?
+                    # Original code checks min(request, C, v*X_supplier) per order. Let's stick to that for now.
+                    max_producible_cap = cap_supplier
+                    max_producible = min(max_producible_cap, max_producible_inv)
 
+                    order_available = min(order_available, max_producible) # Limited by production capability
+
+                # Fulfill the minimum of requested and available
                 order_fulfilled = min(request, order_available)
+
+                # Update inventory consumed *for this supplier*
+                node_yield = self.graph.nodes[supplier].get('v', 1.0) # Yield is 1 for distributors
+                inventory_consumed[supplier] += order_fulfilled / node_yield
 
             # Store the *fulfilled* order amount in R
             self.R.loc[t, edge] = order_fulfilled
             # Store the *fulfilled* amount as sales from the supplier in S
             self.S.loc[t, edge] = order_fulfilled
 
-        # --- 1) Receive Deliveries & Update Inventories ---
-        # Must update pipeline state *before* updating on-hand inventory that depends on it
-
-        # Update pipeline dataframe (Y) for start of t+1
+        # --- 1) Receive Deliveries & Update Pipeline Inventory ---
+        # Update pipeline dataframe (Y) for start of t+1 *before* calculating arrivals
         for edge in self.reorder_links:
              supplier, purchaser = edge
              L = self.lead_times[edge]
              delivery_arriving_now = 0
+             # Check if an order placed L periods ago exists and is arriving
              if t - L >= 0:
-                 delivery_arriving_now = self.R.loc[t - L, edge] # Order placed L periods ago arrives now
+                 # Ensure index t-L is valid for R dataframe (index 0 to T-1)
+                  if t - L < self.num_periods:
+                     delivery_arriving_now = self.R.loc[t - L, edge]
+             else: # t < L, no arrival possible yet
+                 delivery_arriving_now = 0
 
-             # Y[t+1] = Y[t] - arriving_now + newly_placed_order
-             self.Y.loc[t + 1, edge] = self.Y.loc[t, edge] - delivery_arriving_now + self.R.loc[t, edge]
+             # Y[t+1] = Y[t] - arriving_now + newly_placed_order_R[t]
+             # Ensure indices t and t+1 are valid for Y dataframe (index 0 to T)
+             if t + 1 <= self.num_periods:
+                 self.Y.loc[t + 1, edge] = self.Y.loc[t, edge] - delivery_arriving_now + self.R.loc[t, edge]
+             else: # Avoid writing past end of simulation buffer
+                 pass
 
-        # Update on-hand inventory dataframe (X) for start of t+1
+
+        # --- Update On-Hand Inventory (X) for start of t+1 ---
+        # X[t+1] = X[t] + (arrivals in t) - (consumption in t)
+        arrivals_in_t = pd.Series(0.0, index=self.main_nodes)
         for node in self.main_nodes:
-            # Calculate total incoming shipments arriving *now*
-            incoming_now = 0
-            for supplier in self.graph.predecessors(node):
+             for supplier in self.graph.predecessors(node):
                  edge = (supplier, node)
-                 if edge in self.reorder_links: # Only consider links with lead times for deliveries
+                 if edge in self.reorder_links:
                      L = self.lead_times[edge]
-                     if t - L >= 0:
-                         incoming_now += self.R.loc[t - L, edge] # Add delivery arriving now
+                     if t - L >= 0 and t - L < self.num_periods: # Check if arrival is due and valid index
+                         arrivals_in_t[node] += self.R.loc[t - L, edge]
 
-            # Calculate total outgoing material *used* in period t (based on S[t])
-            outgoing_used = 0
-            node_yield = self.graph.nodes[node].get('v', 1.0) # Default yield is 1
-            for successor in self.graph.successors(node):
-                edge = (node, successor)
-                # S[t, edge] is amount *delivered* to successor. Inventory consumed is S / yield.
-                if edge in self.network_links: # Check if it's a valid link in S
-                     outgoing_used += self.S.loc[t, edge] / node_yield
-
-
-            # X[t+1] = X[t] + incoming_now - outgoing_used
-            self.X.loc[t + 1, node] = self.X.loc[t, node] + incoming_now - outgoing_used
+        # Consumption was calculated during order fulfillment (`inventory_consumed`)
+        # Ensure index t+1 is valid for X dataframe (index 0 to T)
+        if t + 1 <= self.num_periods:
+             self.X.loc[t + 1] = self.X.loc[t] + arrivals_in_t - inventory_consumed
+        else: # Avoid writing past end of simulation buffer
+            pass
 
         # --- 2 & 3) Market Demand & Fulfillment ---
-        # Inventory needs to be updated *again* after demand fulfillment
-        X_after_deliveries = self.X.loc[t + 1].copy() # Inventory available to meet demand
+        # Use inventory available *after* arrivals but *before* market sales (X[t+1] currently holds this)
+        X_before_market_sales = self.X.loc[t + 1].copy() if t + 1 <= self.num_periods else self.X.loc[t].copy() # Use copy
 
         for edge in self.retail_links:
             retailer, market = edge
 
-            # Determine demand for this period
+            # Determine demand for this period using the stored sampler function
             demand_realized = max(0, int(round(self.graph.edges[edge]['_sample_demand']())))
             self.D.loc[t, edge] = demand_realized
 
-            # Calculate total demand to fill (current + backlog from start of t)
-            demand_to_fill = demand_realized + self.U.loc[t, edge] # U[t] holds backlog from t-1
+            # Calculate total demand to fill (current + backlog from start of t, which is U[t])
+            demand_to_fill = demand_realized + self.U.loc[t, edge]
 
             # Satisfy demand up to available inventory at the retailer
-            inv_retailer = X_after_deliveries[retailer]
+            inv_retailer = max(0, X_before_market_sales[retailer]) # Use positive inventory only
             sales_to_market = min(demand_to_fill, inv_retailer)
 
             # Update sales dataframe S for the market link
             self.S.loc[t, edge] = sales_to_market
 
-            # Update retailer's inventory *again* after market sales
-            X_after_deliveries[retailer] -= sales_to_market
+            # Update the temporary inventory tracker after market sales
+            X_before_market_sales[retailer] -= sales_to_market
 
             # --- 4) Calculate Unfulfilled Demand / Backlog ---
             unfulfilled = demand_to_fill - sales_to_market
-            if self.backlog:
-                self.U.loc[t + 1, edge] = unfulfilled # Store backlog for next period
-            else:
-                self.U.loc[t + 1, edge] = 0 # Lost sales, no backlog carries over
-                # LS dataframe could be added if explicit lost sales tracking is needed
+             # Ensure index t+1 is valid for U dataframe (index 0 to T)
+            if t + 1 <= self.num_periods:
+                if self.backlog:
+                    self.U.loc[t + 1, edge] = unfulfilled # Store backlog for next period
+                else:
+                    self.U.loc[t + 1, edge] = 0 # Lost sales, no backlog carries over
+                    # LS dataframe could be added if explicit lost sales tracking is needed
+            else: # Avoid writing past end of simulation buffer
+                 pass
 
-        # Final update to inventory dataframe X[t+1] after demand fulfillment
-        self.X.loc[t+1] = X_after_deliveries
+
+        # Final update to official inventory dataframe X[t+1] after demand fulfillment
+        if t + 1 <= self.num_periods:
+             self.X.loc[t+1] = X_before_market_sales
+        else: # Avoid writing past end of simulation buffer
+            pass
+
 
         # --- 5) Calculate Profit ---
         total_profit_period = 0
         for node in self.main_nodes:
-            # Sales Revenue (from node selling to its successors)
-            SR = sum(self.graph.edges[node, k]['p'] * self.S.loc[t, (node, k)]
-                     for k in self.graph.successors(node) if (node, k) in self.network_links)
+             # Ensure indices t, t+1 are valid before accessing dataframes
+            if t < self.num_periods and t + 1 <= self.num_periods:
+                # Sales Revenue (from node selling to its successors)
+                SR = sum(self.graph.edges[node, k]['p'] * self.S.loc[t, (node, k)]
+                         for k in self.graph.successors(node) if (node, k) in self.network_links)
 
-            # Purchasing Costs (from node buying from its predecessors)
-            PC = sum(self.graph.edges[k, node]['p'] * self.R.loc[t, (k, node)]
-                     for k in self.graph.predecessors(node) if (k, node) in self.reorder_links)
+                # Purchasing Costs (from node buying from its predecessors via reorder links)
+                PC = sum(self.graph.edges[k, node]['p'] * self.R.loc[t, (k, node)]
+                         for k in self.graph.predecessors(node) if (k, node) in self.reorder_links)
 
-            # Holding Costs (on-hand at end of t (i.e., X[t+1]) + pipeline at end of t (i.e., Y[t+1]))
-            HC_on_hand = self.graph.nodes[node]['h'] * max(0, self.X.loc[t + 1, node]) # Cost on positive inventory
-            HC_pipeline = sum(self.graph.edges[k, node]['g'] * self.Y.loc[t + 1, (k, node)]
-                              for k in self.graph.predecessors(node) if (k, node) in self.reorder_links)
-            HC = HC_on_hand + HC_pipeline
+                # Holding Costs (on-hand at end of t (i.e., X[t+1]) + pipeline at end of t (i.e., Y[t+1]))
+                HC_on_hand = self.graph.nodes[node]['h'] * max(0, self.X.loc[t + 1, node]) # Cost on positive inventory
+                HC_pipeline = sum(self.graph.edges[k, node]['g'] * max(0, self.Y.loc[t + 1, (k, node)]) # Cost on positive pipeline inventory
+                                  for k in self.graph.predecessors(node) if (k, node) in self.reorder_links)
+                HC = HC_on_hand + HC_pipeline
 
-            # Operating Costs (for factories, based on amount produced/sold)
-            OC = 0
-            if node in self.factory:
-                node_yield = self.graph.nodes[node]['v']
-                total_sold_by_node = sum(self.S.loc[t, (node, k)] for k in self.graph.successors(node) if (node,k) in self.network_links)
-                # Cost applied per unit of *input* consumed? Or output produced? Doc says feed-based.
-                # Input consumed = total_sold / yield
-                OC = self.graph.nodes[node]['o'] * (total_sold_by_node / node_yield)
+                # Operating Costs (for factories, based on amount produced/sold)
+                OC = 0
+                if node in self.factory:
+                    node_yield = self.graph.nodes[node]['v']
+                    total_sold_by_node = sum(self.S.loc[t, (node, k)] for k in self.graph.successors(node) if (node,k) in self.network_links)
+                    # Cost applied per unit of *input* consumed. Input = total_sold / yield
+                    OC = self.graph.nodes[node]['o'] * (total_sold_by_node / node_yield) if node_yield > 0 else 0
 
-            # Unfulfilled Penalty (for retailers, based on unfulfilled demand U calculated earlier)
-            UP = 0
-            if node in self.retail:
-                 # U[t+1] holds the unfulfilled amount *from period t*
-                 # Penalty applies to the unfulfilled amount in the current period t
-                 UP = sum(self.graph.edges[node, k]['b'] * self.U.loc[t + 1, (node, k)]
-                          for k in self.graph.successors(node) if (node, k) in self.retail_links)
+                # Unfulfilled Penalty (for retailers, based on unfulfilled demand U calculated for *this period*)
+                UP = 0
+                if node in self.retail:
+                     # U[t+1] holds the unfulfilled amount *from period t*
+                     # Penalty applies to the unfulfilled amount in the current period t
+                     UP = sum(self.graph.edges[node, k]['b'] * self.U.loc[t + 1, (node, k)]
+                              for k in self.graph.successors(node) if (node, k) in self.retail_links)
 
+                node_profit = SR - PC - OC - HC - UP
+                self.P.loc[t, node] = node_profit
+                total_profit_period += node_profit
+            else: # Should not happen if loop runs correctly, but prevents index error
+                 pass
 
-            node_profit = SR - PC - OC - HC - UP
-            self.P.loc[t, node] = node_profit
-            total_profit_period += node_profit
 
         # Apply discount factor
         discounted_total_profit = (self.alpha ** t) * total_profit_period
@@ -563,14 +624,11 @@ class NetInvMgmtMasterEnv(gym.Env):
         truncated = self.period >= self.num_periods
 
         # Get next observation and info
-        # Handle potential state calculation after truncation? Get obs before checking done?
-        # Standard practice: calculate next state even if done, return it.
         observation = self._get_obs()
         info = self._get_info()
         # Add step-specific info
         info['profit_period_undiscounted'] = total_profit_period
         info['profit_period_discounted'] = discounted_total_profit
-
 
         reward = float(discounted_total_profit) # Ensure reward is float
 
@@ -584,14 +642,25 @@ class NetInvMgmtMasterEnv(gym.Env):
     def render(self, mode="human"):
         """ Renders the environment (e.g., prints state or plots network). """
         if mode == "human":
-            # Option 1: Print basic info
-            print(f"--- Period: {self.period} ---")
-            print("Inventory (X):")
-            print(self.X.loc[self.period])
-            print("\nPipeline (Y):")
-            print(self.Y.loc[self.period])
-            if self.period > 0:
-                print(f"\nProfit (Previous Period, Total): {self.P.loc[self.period-1].sum():.2f}")
+            # Option 1: Print basic info for the *start* of the current period
+            t_current = self.period # period has already been incremented for the *next* step
+            t_print = min(t_current, self.num_periods) # Don't index past end of arrays
+
+            print(f"--- START of Period: {t_print} ---")
+            if t_print <= self.num_periods:
+                 print("Inventory (X):")
+                 print(self.X.loc[t_print])
+                 print("\nPipeline (Y):")
+                 print(self.Y.loc[t_print])
+                 print("\nBacklog (U):")
+                 print(self.U.loc[t_print])
+
+            if t_print > 0:
+                t_prev = t_print - 1
+                print(f"\n--- Results from Previous Period ({t_prev}) ---")
+                print(f"  Demand (D): {self.D.loc[t_prev].to_dict()}")
+                print(f"  Sales (S): {self.S.loc[t_prev].to_dict()}")
+                print(f"  Profit (P): {self.P.loc[t_prev].sum():.2f}")
 
             # Option 2: Plot network (can be slow if called every step)
             # self.plot_network()
@@ -609,45 +678,62 @@ class NetInvMgmtMasterEnv(gym.Env):
             return
 
         plt.figure(figsize=(12, 8))
-        pos = nx.multipartite_layout(self.graph, subset_key="layer") # Requires assigning 'layer' attribute to nodes
 
         # Assign layers (simple heuristic based on type)
         node_layers = {}
         for node in self.graph.nodes():
             if node in self.rawmat: node_layers[node] = 0
             elif node in self.factory: node_layers[node] = 1
-            elif node in self.distrib and node not in self.retail: node_layers[node] = 2 # Non-retail distributors
+            # Separate distributors based on whether they are retailers
             elif node in self.retail: node_layers[node] = 3
+            elif node in self.distrib: node_layers[node] = 2 # Non-retail distributors
             elif node in self.market: node_layers[node] = 4
-            else: node_layers[node] = 2 # Default layer
+            else: node_layers[node] = 2 # Default layer if unclassified (shouldn't happen with current logic)
         nx.set_node_attributes(self.graph, node_layers, "layer")
 
-        pos = nx.multipartite_layout(self.graph, subset_key="layer")
+        # Use the 'layer' attribute for layout
+        pos = nx.multipartite_layout(self.graph, subset_key='layer')
 
         # Draw nodes with different colors based on type
         node_colors = []
+        node_labels = {}
         for node in self.graph.nodes():
-            if node in self.rawmat: color = 'gray'
-            elif node in self.factory: color = 'skyblue'
-            elif node in self.retail: color = 'lightgreen'
-            elif node in self.distrib: color = 'khaki' # Non-retail distributors
-            elif node in self.market: color = 'salmon'
+            node_labels[node] = f"{node}" # Basic label is node number
+            if node in self.rawmat:
+                 color = 'gray'
+                 node_labels[node] += "\n(RawM)"
+            elif node in self.factory:
+                 color = 'skyblue'
+                 node_labels[node] += "\n(Fact)"
+            elif node in self.retail:
+                 color = 'lightgreen'
+                 node_labels[node] += "\n(Retail)"
+            elif node in self.distrib:
+                 color = 'khaki' # Non-retail distributors
+                 node_labels[node] += "\n(Dist)"
+            elif node in self.market:
+                 color = 'salmon'
+                 node_labels[node] += "\n(Market)"
             else: color = 'pink' # Unclassified?
             node_colors.append(color)
 
-        nx.draw_networkx_nodes(self.graph, pos, node_color=node_colors, node_size=700)
-        nx.draw_networkx_edges(self.graph, pos, arrowstyle='->', arrowsize=15, edge_color='gray')
-        nx.draw_networkx_labels(self.graph, pos, font_size=10)
+        nx.draw_networkx_nodes(self.graph, pos, node_color=node_colors, node_size=1500, alpha=0.8)
+        nx.draw_networkx_edges(self.graph, pos, arrowstyle='->', arrowsize=20, edge_color='gray', node_size=1500)
+        nx.draw_networkx_labels(self.graph, pos, labels=node_labels, font_size=9)
 
-        # Add edge labels (optional, can get cluttered)
-        # edge_labels = {(u,v): f"L={d['L']}" if 'L' in d else f"P={d['p']}" for u,v,d in self.graph.edges(data=True)}
-        # nx.draw_networkx_edge_labels(self.graph, pos, edge_labels=edge_labels, font_size=8)
+        # Add edge labels (optional, can get cluttered - maybe just lead time?)
+        edge_labels = {}
+        for u, v, data in self.graph.edges(data=True):
+             label = ""
+             if 'L' in data: label += f"L={data['L']}"
+             #if 'p' in data: label += f"\np={data['p']:.2f}" # Price adds clutter
+             if label: edge_labels[(u, v)] = label
+
+        nx.draw_networkx_edge_labels(self.graph, pos, edge_labels=edge_labels, font_size=8, label_pos=0.3)
 
         plt.title("Supply Network Structure")
-        plt.xlabel("Network Echelon")
-        plt.ylabel("")
-        plt.xticks([]) # Hide x-axis ticks
-        plt.yticks([]) # Hide y-axis ticks
+        # Improve axis labels/titles maybe? multipartite doesn't use axes directly
+        plt.text(0.5, 1.01, "Upstream (Raw Materials) -> Downstream (Market)", ha='center', transform=plt.gca().transAxes)
         plt.box(False) # Remove frame
         plt.show()
 
@@ -661,21 +747,20 @@ class NetInvMgmtMasterEnv(gym.Env):
 class NetInvMgmtBacklogEnv(NetInvMgmtMasterEnv):
     """ Network inventory management environment with backlogging enabled. """
     def __init__(self, *args, **kwargs):
-        if 'env_config' not in kwargs: kwargs['env_config'] = {}
-        kwargs['env_config']['backlog'] = True # Ensure backlog is True
-        super().__init__(*args, **kwargs)
+        # Ensure backlog=True is set correctly, handling potential env_config
+        env_config = kwargs.pop('env_config', {})
+        env_config['backlog'] = True
+        super().__init__(*args, env_config=env_config, **kwargs) # Pass other args/kwargs
 
 class NetInvMgmtLostSalesEnv(NetInvMgmtMasterEnv):
     """ Network inventory management environment with lost sales. """
     def __init__(self, *args, **kwargs):
-        if 'env_config' not in kwargs: kwargs['env_config'] = {}
-        kwargs['env_config']['backlog'] = False # Ensure backlog is False
-        super().__init__(*args, **kwargs)
+        # Ensure backlog=False is set correctly
+        env_config = kwargs.pop('env_config', {})
+        env_config['backlog'] = False
+        super().__init__(*args, env_config=env_config, **kwargs) # Pass other args/kwargs
 
-        # Adjust observation space lower bound if needed (e.g., backlog component)
-        # If state includes backlog/unfulfilled demand U, its lower bound is 0 for lost sales.
-        # The current state uses U[t] (backlog from t-1) as the first component.
-        # So, for lost sales, the first len(self.retail_links) elements should have low=0.
+        # Adjust observation space lower bound: Backlog component should be non-negative
         obs_low_ls = self.observation_space.low.copy()
         obs_low_ls[0:len(self.retail_links)] = 0.0
         self.observation_space = spaces.Box(
@@ -706,20 +791,32 @@ if __name__ == '__main__':
 
     for i in range(env_backlog.num_periods):
         action = env_backlog.sample_action() # Sample random action
-        obs, reward, terminated, truncated, info = env_backlog.step(action)
-        total_reward_backlog += reward
-        if (i+1) % 5 == 0: # Print occasionally
-             print(f"  Step {i+1}, Reward: {reward:.2f}, Total Reward: {total_reward_backlog:.2f}")
-             # env_backlog.render() # Optionally render state printout
-        if terminated or truncated:
-            break
+        try: # Add try-except block around step for easier debugging
+            obs, reward, terminated, truncated, info = env_backlog.step(action)
+            total_reward_backlog += reward
+            if (i+1) % 5 == 0: # Print occasionally
+                 print(f"  Step {i+1}, Reward: {reward:.2f}, Total Reward: {total_reward_backlog:.2f}")
+                 # env_backlog.render() # Optionally render state printout
+            if terminated or truncated:
+                break
+        except Exception as e:
+             print(f"Error during step {i+1}: {e}")
+             # Optionally print more debugging info like current state/action
+             print(f"  Action taken: {action}")
+             print(f"  Current Info: {info}") # Info from *before* the failed step
+             import traceback
+             traceback.print_exc()
+             break # Stop simulation on error
 
     print(f"\nEpisode Finished (Backlog). Total Reward: {total_reward_backlog:.2f}")
     # print(f"Final Info (Backlog): {info}")
     env_backlog.close()
 
     # Optionally plot the network structure
-    env_backlog.plot_network()
+    try:
+        env_backlog.plot_network()
+    except Exception as e:
+        print(f"Error during plot_network for Backlog Env: {e}")
 
 
     # Test Lost Sales Env
@@ -735,12 +832,20 @@ if __name__ == '__main__':
 
     for i in range(env_lost_sales.num_periods):
         action = env_lost_sales.sample_action()
-        obs, reward, terminated, truncated, info = env_lost_sales.step(action)
-        total_reward_lost_sales += reward
-        if (i+1) % 5 == 0:
-             print(f"  Step {i+1}, Reward: {reward:.2f}, Total Reward: {total_reward_lost_sales:.2f}")
-        if terminated or truncated:
-            break
+        try:
+            obs, reward, terminated, truncated, info = env_lost_sales.step(action)
+            total_reward_lost_sales += reward
+            if (i+1) % 5 == 0:
+                 print(f"  Step {i+1}, Reward: {reward:.2f}, Total Reward: {total_reward_lost_sales:.2f}")
+            if terminated or truncated:
+                break
+        except Exception as e:
+             print(f"Error during step {i+1}: {e}")
+             print(f"  Action taken: {action}")
+             print(f"  Current Info: {info}")
+             import traceback
+             traceback.print_exc()
+             break
 
     print(f"\nEpisode Finished (Lost Sales). Total Reward: {total_reward_lost_sales:.2f}")
     env_lost_sales.close()
