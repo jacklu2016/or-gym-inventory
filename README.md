@@ -230,7 +230,6 @@ See `requirements.txt` for base dependencies (manual installation of SB3 and Ray
 ## References
 
 *   Hubbs, C., Perez, H. D., Sarwar, O., Li, C., & Papageorgiou, D. (2020). OR-Gym: A Reinforcement Learning Library for Operations Research Problems. *arXiv preprint arXiv:2008.04001*. ([Link](https://arxiv.org/abs/2008.04001))
-*   Balaji, B., Bach, S. H., Dunning, I., Anderson, R., Kuleshov, V., Swersky, K., & Zhe, S. (2019). Benchmarking Batch Deep Reinforcement Learning Algorithms. *arXiv preprint arXiv:1910.01708*. ([Link](https://arxiv.org/abs/1910.01708)) (Newsvendor Environment Basis)
 
 ## License
 
