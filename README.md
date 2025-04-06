@@ -34,7 +34,6 @@ The original environments are based on the work by Hubbs et al. (2020):
     git clone https://github.com/r2barati/or-gym-inventory.git
     cd or-gym-inventory
     ```
-    *(Replace the URL if your repository path is different)*
 
 2.  **Create a virtual environment (Recommended):**
     ```bash
@@ -120,21 +119,39 @@ The repository includes dedicated benchmark scripts for each environment variant
     python benchmark_NetInvMgmtLostSalesEnv_sb3_rllib.py
     ```
 
-**Note:** Running the `_sb3_rllib.py` scripts, especially for the `InvManagement` and `NetInvMgmt` environments, will take a **significant amount of time** due to training multiple RL agents. Adjust `RL_TRAINING_TIMESTEPS` and `N_EVAL_EPISODES` within the chosen script for quicker tests or more thorough benchmarking. Set `FORCE_RETRAIN = True` to retrain models even if saved files exist.
-
-Benchmark results (CSV files, PNG plots) will be saved into appropriately named subdirectories (e.g., `benchmark_InvMgmtLS_combined/results/`).
+**Note:** Running the benchmarks, especially those involving RL agent training (`RL_TRAINING_TIMESTEPS` > 0), can take a significant amount of time, potentially hours depending on the number of steps, agents, and your hardware. Start with lower `RL_TRAINING_TIMESTEPS` (e.g., 10000-50000) in the script config to test functionality.
 
 ## Environments Overview
 
-*(This section can remain largely the same as the previous version, just ensuring class names match)*
-
-*   **`NewsvendorEnv` (`newsvendor.py`):** Single product, single location, lead time, stochastic demand. Action: order quantity.
-*   **`InvManagement...Env` (`inventory_management.py`):** Multi-echelon linear chain. Action: order quantity vector per stage.
-    *   `InvManagementBacklogEnv`: Unmet demand is backlogged.
-    *   `InvManagementLostSalesEnv`: Unmet demand is lost.
-*   **`NetInvMgmt...Env` (`network_management.py`):** Arbitrary network structure (factories, distributors, etc.). Action: order quantity vector per link.
-    *   `NetInvMgmtBacklogEnv`: Unmet market demand is backlogged.
-    *   `NetInvMgmtLostSalesEnv`: Unmet market demand is lost.
+*   **`NewsvendorEnv` (`newsvendor.py`):**
+    *   Single product, single location.
+    *   Agent decides order quantity each period.
+    *   Stochastic demand (Poisson).
+    *   Fixed lead time for orders.
+    *   Costs: Purchase, Holding, Stockout (Lost Sales Penalty).
+    *   Observation includes costs, demand mean, and pipeline inventory.
+    *   Action is a single continuous value (order quantity).
+*   **`InvManagement...Env` (`inventory_management.py`):**
+    *   Single product, multi-echelon linear supply chain (e.g., Retailer -> Distributor -> Manufacturer).
+    *   Agent decides order quantity for each stage (except the raw material source) each period.
+    *   Stochastic demand (configurable distribution) only at the retailer (stage 0).
+    *   Lead times between stages.
+    *   Production capacities at manufacturing stages.
+    *   Costs: Purchase/Replenishment, Holding (on-hand), Backlog/Lost Sales.
+    *   Observation includes on-hand inventory and recent order history (pipeline).
+    *   Action is a vector of continuous/integer values (order quantities per stage).
+    *   Variants: `InvManagementBacklogEnv` and `InvManagementLostSalesEnv`.
+*   **`NetInvMgmt...Env` (`network_management.py`):**
+    *   Single product, arbitrary network structure (defined via `networkx` graph).
+    *   Nodes can be Raw Material, Factory, Distributor, Retailer, Market.
+    *   Agent decides order quantity for each valid *link* between supplying/receiving nodes.
+    *   Stochastic demand (configurable) occurs at links between Retailers and Markets.
+    *   Lead times associated with links.
+    *   Production capacities and yields at factory nodes.
+    *   Costs: Purchase/Replenishment (link), Operating (factory), Holding (on-hand at node, pipeline on link), Backlog/Lost Sales (market link).
+    *   Observation includes market backlog/demand, node inventories, and pipeline history per link.
+    *   Action is a vector of continuous values (order quantity per link).
+    *   Variants: `NetInvMgmtBacklogEnv` and `NetInvMgmtLostSalesEnv`.
 
 *(Refer to the docstrings within each environment file (`.py`) for details on observation/action spaces, reward calculation, and specific parameters.)*
 
@@ -142,19 +159,43 @@ Benchmark results (CSV files, PNG plots) will be saved into appropriately named 
 
 The `benchmark_*.py` scripts provide a framework to compare agents. The `_sb3_rllib.py` versions are the most comprehensive.
 
-**Agents Included (in `_sb3_rllib.py` versions):**
+**Agents Included:**
 
 *   **Heuristics:**
-    *   `RandomAgent`
-    *   Environment-specific heuristics (e.g., `ConstantOrderAgent`, `BaseStockAgent`).
-*   **Stable Baselines3 (SB3):** PPO, SAC, TD3, A2C, DDPG, plus variations.
-*   **Ray RLlib:** PPO, SAC examples included, framework supports adding more.
+    *   `RandomAgent`: Random actions.
+    *   `ConstantOrderAgent`: Orders a fixed fraction (Network env).
+    *   `OrderUpToHeuristicAgent`: Targets expected demand over L+1 (Newsvendor).
+    *   `ClassicNewsvendorAgent`: Uses critical ratio and demand quantile (Newsvendor).
+    *   `sSPolicyAgent`: Orders up to S if below s (Newsvendor).
+    *   `BaseStockAgent`: Simple independent base stock per stage (InvManagement).
+*   **Stable Baselines3 (SB3):**
+    *   PPO, SAC, TD3, A2C, DDPG
+    *   Example variations (LSTM policy, different buffer/LR/network sizes).
+*   **Ray RLlib:**
+    *   PPO, SAC (Examples)
+    *   Framework allows easy addition of others (TD3, DDPG, APEX, IMPALA etc.).
 
 **Metrics Collected (per Agent):**
-*(Same list as before: Avg Reward, Median, Std Dev, Min/Max, Service Level, Stockouts, Inventory, Eval Time, Train Time, Success Rate)*
 
-**Running & Interpreting Results:**
-Execute the desired `benchmark_*.py` script. Results are saved in corresponding subdirectories. Analyze the `*_summary.csv` table and the generated `.png` plots for performance comparisons.
+*   Average Total Reward (and Median, Std Dev, Min, Max)
+*   Average Service Level (Fill Rate, usually at retailer/market)
+*   Average/Total Stockout Quantity
+*   Average Ending Inventory
+*   Average Evaluation Time per Episode
+*   Total Training Time (for RL agents)
+*   Evaluation Success Rate
+
+## Results Interpretation
+
+The benchmark scripts save results into subdirectories named like `benchmark_<ENV_NAME>_combined/results/`:
+
+*   **`*_summary.csv`:** A table summarizing the average performance and time metrics for each agent, sorted by average reward. This is the main comparison table.
+*   **`*_raw_summary.csv`:** Contains the results (total reward, metrics) for *each individual evaluation episode* for every agent. Useful for statistical analysis or plotting distributions.
+*   **`*_step_details.jsonl`:** (Optional, if `COLLECT_STEP_DETAILS=True`) Contains detailed data for *every step* within every evaluation episode (reward, action, demand, sales, etc.). Can be very large but useful for deep dives.
+*   **`*_rewards_boxplot.png`:** Visualizes the distribution of total rewards achieved by each agent across the evaluation episodes. Helps assess consistency.
+*   **`*_reward_vs_service.png` / `*_reward_vs_inventory.png`:** Scatter plots showing trade-offs between average reward and key operational metrics.
+*   **`*_eval_time_log.png` / `*_train_time.png`:** Bar charts comparing evaluation and training times.
+*   **`*_learning_curves.png`:** Shows the training progress (reward vs. timesteps) for the RL agents, plotted from SB3 Monitor files and/or custom RLlib logs.
 
 ## Dependencies
 
@@ -173,7 +214,7 @@ See `requirements.txt` for base dependencies.
 
 ## References
 
-*(Same as before)*
+*   Hubbs, C., Perez, H. D., Sarwar, O., Li, C., & Papageorgiou, D. (2020). OR-Gym: A Reinforcement Learning Library for Operations Research Problems. *arXiv preprint arXiv:2008.04001*. ([Link](https://arxiv.org/abs/2008.04001))
 
 ## License
 
