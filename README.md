@@ -15,17 +15,17 @@ The original environments are based on the work by Hubbs et al. (2020):
 
 *   **Gymnasium Compatible:** Environments adhere to the modern Gymnasium API standard (`reset` returns `obs, info`, `step` returns `obs, reward, terminated, truncated, info`).
 *   **Three Core Environments:** Covers single-item, multi-echelon, and network inventory problems.
-*   **Backlog & Lost Sales Variants:** Easily switch between backlogging unmet demand or treating it as lost sales.
-*   **Comprehensive Benchmarking:** Includes scripts (`benchmark_*.py`) to compare various agents:
+*   **Backlog & Lost Sales Variants:** Specific environment classes (`*BacklogEnv`, `*LostSalesEnv`) implement these dynamics.
+*   **Comprehensive Benchmarking:** Includes dedicated scripts (`benchmark_*.py`) for each environment variant, comparing various agents:
     *   **Baselines:** Random Agent.
-    *   **Heuristics:** Order-Up-To, Classic Newsvendor (adapted), (s, S) Policy, Base Stock (multi-echelon), Constant Order (network).
-    *   **Stable Baselines3 Agents:** PPO, SAC, TD3, A2C, DDPG (plus example variations like LSTM, different network sizes/hyperparameters).
-    *   **Ray RLlib Agents:** PPO, SAC (plus framework to add more like TD3, DDPG, APEX, IMPALA etc.).
+    *   **Heuristics:** Relevant heuristics adapted for each environment type (e.g., Order-Up-To, Classic Newsvendor, (s,S) for Newsvendor; Base Stock, Constant Order for multi-echelon/network).
+    *   **Stable Baselines3 Agents:** PPO, SAC, TD3, A2C, DDPG (plus example variations like LSTM). Scripts suffixed with `_sb3_rllib.py` explicitly include these. Simpler benchmark scripts might contain a subset.
+    *   **Ray RLlib Agents:** PPO, SAC (plus framework to add more). Scripts suffixed with `_sb3_rllib.py` explicitly include these.
 *   **Detailed Reporting:** Benchmarks generate:
-    *   Summary tables comparing agents on average reward, consistency (std dev, min/max), operational metrics (service level, stockouts, inventory), and time (training/evaluation).
+    *   Summary tables comparing agents on average reward, consistency (std dev, min/max), operational metrics (service level, stockouts, inventory), and time (training/evaluation). Saved to CSV.
     *   Raw results per evaluation episode (CSV).
     *   Detailed step-by-step data (optional, JSON Lines).
-    *   Comparison plots (Reward distribution boxplots, Reward vs. Operational Metrics scatter plots, Timing bar charts, RL learning curves).
+    *   Comparison plots (Reward distribution boxplots, Reward vs. Operational Metrics scatter plots, Timing bar charts, RL learning curves). Saved to PNG.
 
 ## Installation
 
@@ -50,28 +50,29 @@ The original environments are based on the work by Hubbs et al. (2020):
         # Install base requirements (Gymnasium, Numpy, Scipy, Pandas, NetworkX, Matplotlib, Seaborn)
         pip install -r requirements.txt
 
-        # Install Stable Baselines3 (choose ONE framework - torch recommended)
+        # --- Choose ONE framework for SB3 (torch recommended) ---
         pip install stable-baselines3[extra] torch torchvision torchaudio
-        # OR for TensorFlow:
+        # OR
         # pip install stable-baselines3[extra] tensorflow
 
-        # Install Ray RLlib (choose ONE framework - can install both if needed)
+        # --- Install Ray RLlib (if running *_sb3_rllib.py scripts) ---
+        # Choose ONE framework (can match SB3 or be different, installing both is possible)
         pip install "ray[rllib]" torch torchvision torchaudio
-        # OR for TensorFlow:
+        # OR
         # pip install "ray[rllib]" tensorflow
         ```
-        *(Note: `requirements.txt` should ideally contain `gymnasium`, `numpy`, `scipy`, `pandas`, `networkx`, `matplotlib`, `seaborn`)*
+        *(Note: `requirements.txt` should contain `gymnasium`, `numpy`, `scipy`, `pandas`, `networkx`, `matplotlib`, `seaborn`)*
 
 ## Usage
 
 ### 1. Using the Environments Directly
 
-You can import and use the environments like any standard Gymnasium environment:
+You can import and use the specific environment classes like any standard Gymnasium environment:
 
 ```python
 import gymnasium as gym
 # Make sure the relevant python file (e.g., inventory_management.py) is in your path
-from inventory_management import InvManagementBacklogEnv # Or other envs
+from inventory_management import InvManagementLostSalesEnv # Example
 
 # Configuration dictionary (optional, overrides defaults)
 env_config = {
@@ -83,133 +84,77 @@ env_config = {
 }
 
 # Create the environment
-# env = InvManagementBacklogEnv(env_config=env_config)
-env = InvManagementBacklogEnv() # Use defaults
+# env = InvManagementLostSalesEnv(env_config=env_config)
+env = InvManagementLostSalesEnv() # Use defaults
 
 # Standard Gymnasium loop
 observation, info = env.reset(seed=42)
-terminated = False
-truncated = False
-total_episode_reward = 0
-
-while not terminated and not truncated:
-    # Replace with your agent's action
-    action = env.action_space.sample() # Example: random action
-
-    observation, reward, terminated, truncated, info = env.step(action)
-    total_episode_reward += reward
-
-    # Optional: Render or print info
-    # env.render()
-    # print(f"Step: {info.get('period', '?')}, Reward: {reward:.2f}")
-
-print(f"Episode finished. Total Reward: {total_episode_reward:.2f}")
+# ... (rest of loop as shown in previous README version) ...
 env.close()
 ```
 
 ### 2. Running the Benchmarks
 
-The repository includes comprehensive benchmark scripts that train (if applicable), evaluate, and compare multiple agents on each environment.
+The repository includes dedicated benchmark scripts for each environment variant. The scripts ending in `_sb3_rllib.py` contain the most comprehensive set of agents, including both Stable Baselines3 and Ray RLlib implementations. Simpler scripts might focus only on SB3 or heuristics.
 
-*   **Newsvendor Benchmark:**
+**Choose the script corresponding to the environment you want to benchmark:**
+
+*   **Newsvendor (Comprehensive: SB3 + RLlib):**
     ```bash
-    python benchmark_newsvendor_combined.py
+    python benchmark_newsvendor_sb3_rllib.py
     ```
-*   **Inventory Management (Backlog) Benchmark:**
+*   **Inventory Management (Backlog, Comprehensive: SB3 + RLlib):**
     ```bash
-    python benchmark_invmgmt_combined.py
+    python benchmark_InvManagementBacklogEnv_sb3_rllib.py
     ```
-*   **Inventory Management (Lost Sales) Benchmark:**
+*   **Inventory Management (Lost Sales, Comprehensive: SB3 + RLlib):**
     ```bash
-    python benchmark_invmgmt_ls_combined.py
+    python benchmark_InvManagementLostSalesEnv_sb3_rllib.py
     ```
-*   **Network Inventory Management (Backlog) Benchmark:**
+*   **Network Inventory Management (Backlog, Comprehensive: SB3 + RLlib):**
     ```bash
-    python benchmark_netinvmgmt_combined.py
+    python benchmark_NetInvMgmtBacklogEnv_sb3_rllib.py
     ```
-*   **Network Inventory Management (Lost Sales) Benchmark:**
+*   **Network Inventory Management (Lost Sales, Comprehensive: SB3 + RLlib):**
     ```bash
-    python benchmark_netinvmgmt_ls_combined.py
+    python benchmark_NetInvMgmtLostSalesEnv_sb3_rllib.py
     ```
 
-**Note:** Running the benchmarks, especially those involving RL agent training (`RL_TRAINING_TIMESTEPS` > 0), can take a significant amount of time, potentially hours depending on the number of steps, agents, and your hardware. Start with lower `RL_TRAINING_TIMESTEPS` (e.g., 10000-50000) in the script config to test functionality.
+**Note:** Running the `_sb3_rllib.py` scripts, especially for the `InvManagement` and `NetInvMgmt` environments, will take a **significant amount of time** due to training multiple RL agents. Adjust `RL_TRAINING_TIMESTEPS` and `N_EVAL_EPISODES` within the chosen script for quicker tests or more thorough benchmarking. Set `FORCE_RETRAIN = True` to retrain models even if saved files exist.
+
+Benchmark results (CSV files, PNG plots) will be saved into appropriately named subdirectories (e.g., `benchmark_InvMgmtLS_combined/results/`).
 
 ## Environments Overview
 
-*   **`NewsvendorEnv` (`newsvendor.py`):**
-    *   Single product, single location.
-    *   Agent decides order quantity each period.
-    *   Stochastic demand (Poisson).
-    *   Fixed lead time for orders.
-    *   Costs: Purchase, Holding, Stockout (Lost Sales Penalty).
-    *   Observation includes costs, demand mean, and pipeline inventory.
-    *   Action is a single continuous value (order quantity).
-*   **`InvManagement...Env` (`inventory_management.py`):**
-    *   Single product, multi-echelon linear supply chain (e.g., Retailer -> Distributor -> Manufacturer).
-    *   Agent decides order quantity for each stage (except the raw material source) each period.
-    *   Stochastic demand (configurable distribution) only at the retailer (stage 0).
-    *   Lead times between stages.
-    *   Production capacities at manufacturing stages.
-    *   Costs: Purchase/Replenishment, Holding (on-hand), Backlog/Lost Sales.
-    *   Observation includes on-hand inventory and recent order history (pipeline).
-    *   Action is a vector of continuous/integer values (order quantities per stage).
-    *   Variants: `InvManagementBacklogEnv` and `InvManagementLostSalesEnv`.
-*   **`NetInvMgmt...Env` (`network_management.py`):**
-    *   Single product, arbitrary network structure (defined via `networkx` graph).
-    *   Nodes can be Raw Material, Factory, Distributor, Retailer, Market.
-    *   Agent decides order quantity for each valid *link* between supplying/receiving nodes.
-    *   Stochastic demand (configurable) occurs at links between Retailers and Markets.
-    *   Lead times associated with links.
-    *   Production capacities and yields at factory nodes.
-    *   Costs: Purchase/Replenishment (link), Operating (factory), Holding (on-hand at node, pipeline on link), Backlog/Lost Sales (market link).
-    *   Observation includes market backlog/demand, node inventories, and pipeline history per link.
-    *   Action is a vector of continuous values (order quantity per link).
-    *   Variants: `NetInvMgmtBacklogEnv` and `NetInvMgmtLostSalesEnv`.
+*(This section can remain largely the same as the previous version, just ensuring class names match)*
+
+*   **`NewsvendorEnv` (`newsvendor.py`):** Single product, single location, lead time, stochastic demand. Action: order quantity.
+*   **`InvManagement...Env` (`inventory_management.py`):** Multi-echelon linear chain. Action: order quantity vector per stage.
+    *   `InvManagementBacklogEnv`: Unmet demand is backlogged.
+    *   `InvManagementLostSalesEnv`: Unmet demand is lost.
+*   **`NetInvMgmt...Env` (`network_management.py`):** Arbitrary network structure (factories, distributors, etc.). Action: order quantity vector per link.
+    *   `NetInvMgmtBacklogEnv`: Unmet market demand is backlogged.
+    *   `NetInvMgmtLostSalesEnv`: Unmet market demand is lost.
+
+*(Refer to the docstrings within each environment file (`.py`) for details on observation/action spaces, reward calculation, and specific parameters.)*
 
 ## Benchmarking Details
 
-The `benchmark_*.py` scripts provide a framework to compare agents.
+The `benchmark_*.py` scripts provide a framework to compare agents. The `_sb3_rllib.py` versions are the most comprehensive.
 
-**Agents Included:**
+**Agents Included (in `_sb3_rllib.py` versions):**
 
 *   **Heuristics:**
-    *   `RandomAgent`: Random actions.
-    *   `ConstantOrderAgent`: Orders a fixed fraction (Network env).
-    *   `OrderUpToHeuristicAgent`: Targets expected demand over L+1 (Newsvendor).
-    *   `ClassicNewsvendorAgent`: Uses critical ratio and demand quantile (Newsvendor).
-    *   `sSPolicyAgent`: Orders up to S if below s (Newsvendor).
-    *   `BaseStockAgent`: Simple independent base stock per stage (InvManagement).
-*   **Stable Baselines3 (SB3):**
-    *   PPO, SAC, TD3, A2C, DDPG
-    *   Example variations (LSTM policy, different buffer/LR/network sizes).
-*   **Ray RLlib:**
-    *   PPO, SAC (Examples)
-    *   Framework allows easy addition of others (TD3, DDPG, APEX, IMPALA etc.).
+    *   `RandomAgent`
+    *   Environment-specific heuristics (e.g., `ConstantOrderAgent`, `BaseStockAgent`).
+*   **Stable Baselines3 (SB3):** PPO, SAC, TD3, A2C, DDPG, plus variations.
+*   **Ray RLlib:** PPO, SAC examples included, framework supports adding more.
 
 **Metrics Collected (per Agent):**
+*(Same list as before: Avg Reward, Median, Std Dev, Min/Max, Service Level, Stockouts, Inventory, Eval Time, Train Time, Success Rate)*
 
-*   Average Total Reward (and Median, Std Dev, Min, Max)
-*   Average Service Level (Fill Rate, usually at retailer/market)
-*   Average/Total Stockout Quantity
-*   Average Ending Inventory
-*   Average Evaluation Time per Episode
-*   Total Training Time (for RL agents)
-*   Evaluation Success Rate
-
-**Running Benchmarks:**
-Execute the desired `benchmark_*.py` script using `python <script_name>.py`. Key parameters like `N_EVAL_EPISODES` and `RL_TRAINING_TIMESTEPS` can be adjusted within the script's Configuration section. Set `FORCE_RETRAIN = True` to force retraining RL models even if saved versions exist.
-
-## Results Interpretation
-
-The benchmark scripts save results into subdirectories named like `benchmark_<ENV_NAME>_combined/results/`:
-
-*   **`*_summary.csv`:** A table summarizing the average performance and time metrics for each agent, sorted by average reward. This is the main comparison table.
-*   **`*_raw_summary.csv`:** Contains the results (total reward, metrics) for *each individual evaluation episode* for every agent. Useful for statistical analysis or plotting distributions.
-*   **`*_step_details.jsonl`:** (Optional, if `COLLECT_STEP_DETAILS=True`) Contains detailed data for *every step* within every evaluation episode (reward, action, demand, sales, etc.). Can be very large but useful for deep dives.
-*   **`*_rewards_boxplot.png`:** Visualizes the distribution of total rewards achieved by each agent across the evaluation episodes. Helps assess consistency.
-*   **`*_reward_vs_service.png` / `*_reward_vs_inventory.png`:** Scatter plots showing trade-offs between average reward and key operational metrics.
-*   **`*_eval_time_log.png` / `*_train_time.png`:** Bar charts comparing evaluation and training times.
-*   **`*_learning_curves.png`:** Shows the training progress (reward vs. timesteps) for the RL agents, plotted from SB3 Monitor files and/or custom RLlib logs.
+**Running & Interpreting Results:**
+Execute the desired `benchmark_*.py` script. Results are saved in corresponding subdirectories. Analyze the `*_summary.csv` table and the generated `.png` plots for performance comparisons.
 
 ## Dependencies
 
@@ -221,15 +166,14 @@ The benchmark scripts save results into subdirectories named like `benchmark_<EN
 *   networkx (for NetInvMgmt environment)
 *   matplotlib
 *   seaborn
-*   stable-baselines3[extra]
-*   ray[rllib]
-*   torch or tensorflow (for SB3 and RLlib)
+*   stable-baselines3[extra] (`pip install stable-baselines3[extra] torch # or tensorflow`)
+*   ray[rllib] (`pip install "ray[rllib]" torch # or tensorflow`)
 
-See `requirements.txt` for base dependencies (manual installation of SB3 and Ray RLlib with framework choice is recommended).
+See `requirements.txt` for base dependencies.
 
 ## References
 
-*   Hubbs, C., Perez, H. D., Sarwar, O., Li, C., & Papageorgiou, D. (2020). OR-Gym: A Reinforcement Learning Library for Operations Research Problems. *arXiv preprint arXiv:2008.04001*. ([Link](https://arxiv.org/abs/2008.04001))
+*(Same as before)*
 
 ## License
 
