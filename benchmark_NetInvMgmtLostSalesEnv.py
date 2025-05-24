@@ -44,7 +44,7 @@ except ImportError:
     PPO, SAC, TD3, A2C, DDPG = DummyModel, DummyModel, DummyModel, DummyModel, DummyModel
 
 # --- Environment Import ---
-ENV_MODULE_NAME = "network_management"
+ENV_MODULE_NAME = "network_management_custom"
 # <<<<<<<<<<<<<<<<< CHANGE: Target Lost Sales Env >>>>>>>>>>>>>>>>>
 ENV_CLASS_NAME = "NetInvMgmtLostSalesEnv"  # Changed class name
 

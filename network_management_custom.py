@@ -110,31 +110,31 @@ class NetInvMgmtMasterEnv(gym.Env):
         self.graph = nx.DiGraph()
         # Define nodes with attributes
         self.graph.add_nodes_from([0]) # Market
-        self.graph.add_nodes_from([1, 2, 3], I0=100, h=0.030) # Retailer
-        self.graph.add_nodes_from([4], I0=110, h=0.020) # Distributor
-        self.graph.add_nodes_from([5], I0=380, C=80, o=0.012, v=1.000, h=0.011) # Manufacturer
+        self.graph.add_nodes_from([1, 2, 3], I0=120, h=0.200) # Retailer
+        self.graph.add_nodes_from([4], I0=900, h=0.200) # Distributor
+        self.graph.add_nodes_from([5], I0=1200, C=80, o=0.012, v=1.000, h=0.100) # Manufacturer
         self.graph.add_nodes_from([6]) # Raw materials
         # Define edges with attributes
         self.graph.add_edges_from([
              # Edge (1,0) connects Retailer 1 to Market 0
-            (1, 0, {'p': 2.000, 'b': 0.100, # p: price charged by retailer, b: backlog/lost sale cost
+            (1, 0, {'p': 25.000, 'b': 0.200, # p: price charged by retailer, b: backlog/lost sale cost
                     # Function to sample demand using environment's RNG
                     'demand_dist_func': lambda **p: self.np_random.poisson(**p),
                     # Parameters for the demand function (numpy poisson uses 'lam')
                     'dist_param': {'lam': 20}}),
-            (2, 0, {'p': 2.000, 'b': 0.100,  # p: price charged by retailer, b: backlog/lost sale cost
+            (2, 0, {'p': 25.000, 'b': 0.200,  # p: price charged by retailer, b: backlog/lost sale cost
                     # Function to sample demand using environment's RNG
                     'demand_dist_func': lambda **p: self.np_random.poisson(**p),
                     # Parameters for the demand function (numpy poisson uses 'lam')
                     'dist_param': {'lam': 20}}),
-            (3, 0, {'p': 2.000, 'b': 0.100,  # p: price charged by retailer, b: backlog/lost sale cost
+            (3, 0, {'p': 25.000, 'b': 0.200,  # p: price charged by retailer, b: backlog/lost sale cost
                     # Function to sample demand using environment's RNG
                     'demand_dist_func': lambda **p: self.np_random.poisson(**p),
                     # Parameters for the demand function (numpy poisson uses 'lam')
                     'dist_param': {'lam': 20}}),
-            (4, 1, {'L': 1, 'p': 1.500, 'g': 0.010}), # L: Lead Time,L=0 means immediate transfer p: purchase cost for receiver, g: pipeline holding cost
-            (4, 2, {'L': 1, 'p': 1.500, 'g': 0.010}),
-            (4, 3, {'L': 1, 'p': 1.500, 'g': 0.010}),
+            (4, 1, {'L': 1, 'p': 5.500, 'g': 0.010}), # L: Lead Time,L=0 means immediate transfer p: purchase cost for receiver, g: pipeline holding cost
+            (4, 2, {'L': 1, 'p': 5.500, 'g': 0.010}),
+            (4, 3, {'L': 1, 'p': 5.500, 'g': 0.010}),
             (5, 4, {'L': 1, 'p': 1.2, 'g': 0.015}),
             (6, 5, {'L': 0, 'p': 0.500, 'g': 0.000})
         ])
