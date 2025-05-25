@@ -84,7 +84,7 @@ N_EVAL_EPISODES = 20
 RL_TRAINING_TIMESTEPS = 75000  # Keep consistent with backlog test or adjust as needed
 SEED_OFFSET = 7000  # Use different offset than backlog
 FORCE_RETRAIN = False
-COLLECT_STEP_DETAILS = False
+COLLECT_STEP_DETAILS = True
 N_ENVS_TRAIN = 1
 
 # <<<<<<<<<<<<<<<<< CHANGE: Paths for Lost Sales >>>>>>>>>>>>>>>>>
@@ -278,8 +278,25 @@ def evaluate_agent(agent: BaseAgent,
                     ep_stockout_df.loc[t_current] = eval_env.U.loc[
                         t_current + 1, eval_env.retail_links]  # U[t+1] is LS from period t
                     ep_end_inv_df.loc[t_current] = eval_env.X.loc[t_current + 1, eval_env.main_nodes]
-                if collect_details: episode_step_details.append(
-                    {'step': episode_steps, 'reward': reward, 'action': action.tolist()})  # Simplified details
+
+                demand_this_step = info.get('demand_realized', 0);
+                #episode_demand_retailer += demand_this_step
+                sales_vector = info.get('sales',
+                                        np.zeros(eval_env.num_stages if hasattr(eval_env, 'num_stages') else 1))
+                sales_at_retailer = sales_vector[0];
+                #episode_sales_retailer += sales_at_retailer
+                unfulfilled_vector = info.get('unfulfilled',
+                                              np.zeros(eval_env.num_stages if hasattr(eval_env, 'num_stages') else 1))
+                stockout_at_retailer = unfulfilled_vector[0];
+                #episode_stockout_qty_retailer += stockout_at_retailer
+                ending_inv_vector = info.get('ending_inventory', np.zeros(
+                    eval_env.action_space.shape[0] if hasattr(eval_env, 'action_space') else 1))
+
+                step_data = {'step': episode_steps, 'reward': reward, 'action': action.tolist(),
+                             'demand_retailer': demand_this_step, 'sales_retailer': sales_at_retailer,
+                             'stockout_retailer': stockout_at_retailer, 'ending_inv_vector': ending_inv_vector.tolist()}
+                if collect_details: episode_step_details.append(step_data)
+                    #{'step': episode_steps, 'reward': reward, 'action': action.tolist()})  # Simplified details
             end_time = time.perf_counter();
             episode_time = end_time - start_time;
             total_eval_time += episode_time

@@ -17,6 +17,15 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
 
+def numpy_encoder(obj):
+    if isinstance(obj, (np.int64, np.int32)):
+        return int(obj)
+    elif isinstance(obj, (np.float64, np.float32)):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
+
 # --- RL specific imports ---
 SB3_AVAILABLE = False
 try:
@@ -84,7 +93,7 @@ except Exception as e:
 N_EVAL_EPISODES = 30
 RL_TRAINING_TIMESTEPS = 50000 # Keep consistent with backlog test for comparison (or increase both)
 SEED_OFFSET = 5000 # Use different offset
-FORCE_RETRAIN = False
+FORCE_RETRAIN = True
 COLLECT_STEP_DETAILS = True
 N_ENVS_TRAIN = 4
 
@@ -100,12 +109,12 @@ os.makedirs(RESULTS_DIR, exist_ok=True)
 # Environment configuration for evaluation/training
 # Using default parameters but ensuring backlog=False is implicitly handled by the class
 ENV_CONFIG = {
-    'periods': 50,
+    'periods': 30,
     # Add overrides here if needed, matching the backlog env config if desired for direct comparison
     # 'I0': [50, 50],
     # 'c': [20, 25],
     # 'L': [2, 3],
-    # 'dist_param': {'mu': 15}
+    'dist_param': {'mu': 20}
 }
 
 
@@ -233,7 +242,7 @@ def evaluate_agent(agent: BaseAgent,
                    seed_offset: int = 0,
                    # fixed_params not implemented for InvManagement Env yet
                    collect_details: bool = True
-                   ) -> Dict:
+                   ) -> dict:
     # ... (Keep the function from the previous response - benchmark_invmanagement.py) ...
     # This function correctly extracts metrics like demand_realized, sales, unfulfilled, ending_inventory
     # from the info dict provided by the InvManagement env's step method.
@@ -292,7 +301,7 @@ def evaluate_agent(agent: BaseAgent,
 
 # --- Results Processing ---
 # (process_and_report_results function can be reused)
-def process_and_report_results(all_eval_results: List[Dict], agent_objects: Dict):
+def process_and_report_results(all_eval_results: list[dict], agent_objects: dict):
     # ... (Keep the function from benchmark_newsvendor_advanced.py) ...
     # It will use the correct RESULTS_DIR and ENV_NAME_SHORT due to global scope
     if not all_eval_results: print("No results."); return None, None
@@ -329,7 +338,7 @@ def process_and_report_results(all_eval_results: List[Dict], agent_objects: Dict
                         for step_data in steps:
                             step_data['agent'] = agent_name; step_data['episode'] = ep_num + 1
                             serializable_data = {k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in step_data.items()}
-                            f.write(json.dumps(serializable_data) + '\n')
+                            f.write(json.dumps(serializable_data, default=numpy_encoder) + '\n')
             print("Step details saved.")
     except Exception as e: print(f"\nError saving results: {e}")
     return summary, results_df_raw_summary
@@ -337,7 +346,7 @@ def process_and_report_results(all_eval_results: List[Dict], agent_objects: Dict
 
 # --- Plotting Functions ---
 # (plot_learning_curves and plot_benchmark_results can be reused, just update titles/filenames)
-def plot_learning_curves(log_dirs: Dict[str, str], title: str = "RL Learning Curves"):
+def plot_learning_curves(log_dirs: dict[str, str], title: str = "RL Learning Curves"):
     # ... (Keep the function from benchmark_newsvendor_advanced.py) ...
     if not SB3_AVAILABLE: return
     plt.figure(figsize=(12, 7)); plt.title(title); plt.xlabel("Timesteps"); plt.ylabel("Reward")
@@ -425,7 +434,7 @@ if __name__ == "__main__":
     print("\n--- Training Phase ---")
     for name, agent in agent_objects.items():
         if isinstance(agent, SB3AgentWrapper):
-             agent.train(ENV_CONFIG, total_timesteps=RL_TRAINING_TIMESTEPS, save_path_prefix=f"{ENV_NAME_SHORT}_{name}_")
+            agent.train(ENV_CONFIG, total_timesteps=RL_TRAINING_TIMESTEPS, save_path_prefix=f"{ENV_NAME_SHORT}_{name}_")
 
     # --- Run Evaluation ---
     print("\n--- Evaluation Phase ---")
